@@ -1,0 +1,101 @@
+/* Erscheinungsbild von CitizenHQ ("deep-space cockpit HUD").
+   Werte aus apps/web/app/globals.css des Hauptrepos — nicht neu erfunden. */
+:root {
+  --space-900: #071015;
+  --space-800: #0a171d;
+  --holo: #7cc5d1;
+  --holo-bright: #b5dde3;
+  --amber: #d6a34a;
+  --up: #72ba91;
+  --danger: #ef5454;
+  --ink: #dce6e8;
+  --ink-soft: #a9bbc1;
+  --ink-faint: #879ba3;
+  --line: rgba(158, 191, 200, 0.22);
+  --line-strong: rgba(158, 191, 200, 0.42);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--space-900);
+  color: var(--ink);
+  font-family: "Sora", system-ui, -apple-system, sans-serif;
+  /* Dünnes Raster wie auf der Seite — dezent, nicht dekorativ überladen. */
+  background-image:
+    linear-gradient(rgba(124, 197, 209, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(124, 197, 209, 0.04) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+.huelle { max-width: 34rem; margin: 0 auto; padding: 3rem 1.5rem; }
+
+.kicker {
+  font-family: "Space Mono", ui-monospace, monospace;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.34em;
+  color: var(--holo);
+}
+
+h1 {
+  font-family: "Chakra Petch", system-ui, sans-serif;
+  font-size: clamp(1.8rem, 5vw, 2.6rem);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0.5rem 0 0;
+}
+
+.panel {
+  border: 1px solid var(--line);
+  background: rgba(10, 23, 29, 0.72);
+  padding: 1.5rem;
+  margin-top: 1.5rem;
+  position: relative;
+}
+/* Ecken-Markierungen wie im HUD der Seite */
+.panel::before, .panel::after {
+  content: ""; position: absolute; width: 10px; height: 10px;
+  border-color: var(--holo); border-style: solid;
+}
+.panel::before { top: -1px; left: -1px; border-width: 1px 0 0 1px; }
+.panel::after { bottom: -1px; right: -1px; border-width: 0 1px 1px 0; }
+
+.mono { font-family: "Space Mono", ui-monospace, monospace; }
+.leise { color: var(--ink-faint); font-size: 0.78rem; line-height: 1.6; }
+.weich { color: var(--ink-soft); line-height: 1.65; }
+
+.code {
+  font-family: "Space Mono", ui-monospace, monospace;
+  font-size: 2.4rem;
+  letter-spacing: 0.28em;
+  color: var(--holo-bright);
+  text-align: center;
+  padding: 1rem 0;
+  /* tabular, damit die Ziffern beim Wechsel nicht springen */
+  font-variant-numeric: tabular-nums;
+}
+
+button {
+  font-family: "Space Mono", ui-monospace, monospace;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  padding: 0.7rem 1.2rem;
+  background: transparent;
+  color: var(--holo);
+  border: 1px solid var(--holo);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+button:hover:not(:disabled) { background: var(--holo); color: var(--space-900); }
+button:disabled { opacity: 0.45; cursor: default; }
+button.stumm { color: var(--ink-faint); border-color: var(--line-strong); }
+button.stumm:hover:not(:disabled) { background: var(--line-strong); color: var(--ink); }
+
+.reihe { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-top: 1rem; }
+.fehler { color: var(--danger); }
+.gut { color: var(--up); }
+.warnung { color: var(--amber); }
