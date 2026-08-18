@@ -99,3 +99,18 @@ button.stumm:hover:not(:disabled) { background: var(--line-strong); color: var(-
 .fehler { color: var(--danger); }
 .gut { color: var(--up); }
 .warnung { color: var(--amber); }
+
+/* Eingabefelder — HUD-Rahmen wie die Knöpfe, aber ruhiger: sie werden gelesen,
+   nicht gedrückt. */
+input {
+  font-family: "Space Mono", ui-monospace, monospace;
+  font-size: 0.8rem;
+  padding: 0.6rem 0.75rem;
+  background: var(--space-800);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  outline: none;
+  transition: border-color 0.15s;
+}
+input:focus { border-color: var(--holo); }
+input::placeholder { color: var(--ink-faint); }

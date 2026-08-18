@@ -147,3 +147,81 @@ export function nachGruppe(
   }
   return [...karte.entries()];
 }
+
+// -------------------------------------------------------------- Hangar (#325)
+
+export interface HangarSchiff {
+  slug: string;
+  name: string;
+  hersteller: string | null;
+  bild: string | null;
+  anzahl: number;
+  status: string;
+  /** Beschriftung vom Server — der Client führt kein eigenes Vokabular. */
+  statusText: string;
+  notiz: string | null;
+  /** ISO-Zeitstempel oder null; die Anzeige übersetzt in die lokale Zeit. */
+  bis: string | null;
+  freigegebenAn: { id: number; name: string }[];
+}
+
+export interface HangarStand {
+  schiffe: HangarSchiff[];
+  statusWerte: { key: string; text: string }[];
+}
+
+export interface SuchTreffer {
+  slug: string;
+  name: string;
+  hersteller: string | null;
+  bild: string | null;
+}
+
+/** Antwort auspacken und im Fehlerfall den GRUND werfen, nicht bloß "ging nicht".
+ *  Der Server schickt zu jedem 4xx eine `error_description` in Klartext — die
+ *  wegzuwerfen und "Fehler" anzuzeigen, macht aus einem lösbaren Problem
+ *  ("Flotte voll") ein rätselhaftes. */
+async function auspacken<T>(antwort: Response): Promise<T> {
+  const daten = (await antwort.json().catch(() => ({}))) as T & {
+    error_description?: string;
+    error?: string;
+  };
+  if (!antwort.ok) {
+    if (antwort.status === 401) throw new Error("ABGEMELDET");
+    throw new Error(daten.error_description ?? daten.error ?? `Server meldet ${antwort.status}.`);
+  }
+  return daten;
+}
+
+export async function hangarLesen(token: string): Promise<HangarStand> {
+  return auspacken<HangarStand>(
+    await tauriFetch(`${BASIS}/api/client/hangar`, {
+      headers: { authorization: `Bearer ${token}` },
+    }),
+  );
+}
+
+/** Eine Änderung am Hangar. Der Server schickt den NEUEN Stand zurück — der
+ *  Client rechnet sich nie selbst aus, was seine Änderung bewirkt hat. */
+export async function hangarAendern(
+  token: string,
+  rumpf: { aktion: "hinzufuegen" | "entfernen" | "status"; slug: string; status?: string; notiz?: string; bis?: string },
+): Promise<HangarSchiff[]> {
+  const daten = await auspacken<{ schiffe: HangarSchiff[] }>(
+    await tauriFetch(`${BASIS}/api/client/hangar`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify(rumpf),
+    }),
+  );
+  return daten.schiffe;
+}
+
+export async function schiffeSuchen(token: string, q: string): Promise<SuchTreffer[]> {
+  const daten = await auspacken<{ schiffe: SuchTreffer[] }>(
+    await tauriFetch(`${BASIS}/api/client/schiffe?q=${encodeURIComponent(q)}`, {
+      headers: { authorization: `Bearer ${token}` },
+    }),
+  );
+  return daten.schiffe;
+}

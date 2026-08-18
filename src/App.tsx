@@ -2,6 +2,7 @@
 //
 // Mehr kann er noch nicht — die Endpunkte für Hangar und Lager gibt es serverseitig
 // noch nicht (siehe AGENTS.md §6). Das ist Absicht: erst der Weg hinein, dann die Inhalte.
+import { Hangar } from "./Hangar";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -18,7 +19,10 @@ import {
 type Zustand =
   | { art: "start" }
   | { art: "wartet"; code: GeraeteCode; restSek: number }
-  | { art: "angemeldet"; name: string; email?: string }
+  // Das Token gehoert in den Zustand, nicht nur in den localStorage: die Ansichten
+  // brauchen es fuer jede Abfrage, und aus dem Speicher zu lesen hiesse, dass ein
+  // Abmelden in einem Reiter woanders unbemerkt bliebe.
+  | { art: "angemeldet"; token: string; name: string; email?: string }
   | { art: "fehler"; text: string };
 
 const SPEICHER = "chq.token";
@@ -40,7 +44,7 @@ export default function App() {
     if (!token) return;
     void werBinIch(token).then((wer) => {
       if (wer) {
-        setZustand({ art: "angemeldet", name: wer.name, email: wer.email });
+        setZustand({ art: "angemeldet", token, name: wer.name, email: wer.email });
         void meinStand(token).then(setStand);
       } else localStorage.removeItem(SPEICHER);
     });
@@ -70,7 +74,7 @@ export default function App() {
         if (r.art === "fertig") {
           localStorage.setItem(SPEICHER, r.token);
           const wer = await werBinIch(r.token);
-          setZustand({ art: "angemeldet", name: wer?.name ?? "Pilot", email: wer?.email });
+          setZustand({ art: "angemeldet", token: r.token, name: wer?.name ?? "Pilot", email: wer?.email });
           void meinStand(r.token).then(setStand);
           return;
         }
@@ -160,8 +164,8 @@ export default function App() {
             </p>
           )}
           <p className="leise" style={{ marginTop: "1rem" }}>
-            Hangar, Lager und Blaupausen folgen — die Schnittstellen dafür entstehen gerade
-            (#325, Stufe 2). Den Zugriff kannst du jederzeit im Profil unter „Verbundene Geräte"
+            Lager und Blaupausen folgen — die Schnittstellen dafür entstehen gerade
+            (#325). Den Zugriff kannst du jederzeit im Profil unter „Verbundene Geräte"
             wieder entziehen.
           </p>
           <div className="reihe">
@@ -170,6 +174,10 @@ export default function App() {
             </button>
           </div>
         </div>
+      )}
+
+      {zustand.art === "angemeldet" && (
+        <Hangar token={zustand.token} aufAbmeldung={abmelden} />
       )}
 
       {zustand.art === "angemeldet" && stand && (
