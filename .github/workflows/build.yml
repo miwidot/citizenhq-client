@@ -1,14 +1,18 @@
 # Test-Builds fuer Windows und Linux (scverse #502, erste Stufe).
 #
-# Bewusst noch KEIN Release und keine Signatur: die Dateien landen nur als Artefakt am
-# Lauf (Actions -> Lauf -> Artifacts). Windows zeigt beim Start deshalb SmartScreen
-# ("Unbekannter Herausgeber"). Signieren und Auto-Update kommen mit #502.
+# Jeder Push auf main wird ein GitHub-Release (Tag build-<Laufnummer>). Die Webseite
+# verlinkt /releases/latest, zeigt also immer den neuesten Build.
+# Noch unsigniert: Windows zeigt SmartScreen ("Unbekannter Herausgeber").
+# Signieren und Auto-Update kommen mit scverse #502.
 name: build
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -61,3 +65,29 @@ jobs:
             src-tauri/target/release/bundle/msi/*.msi
             src-tauri/target/release/bundle/appimage/*.AppImage
             src-tauri/target/release/bundle/deb/*.deb
+
+  release:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      # Leerzeichen in Dateinamen machen Download-Links unhandlich
+      - run: |
+          cd dist
+          for f in *; do mv -n "$f" "${f// /_}" 2>/dev/null || true; done
+          ls -la
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: CitizenHQ Build ${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          body: |
+            Test-Build von ${{ github.sha }}.
+            Windows: .exe (Installer) oder .msi. Nicht signiert, Windows fragt deshalb nach: "Weitere Informationen", dann "Trotzdem ausfuehren".
+            Linux: .AppImage oder .deb.
+          files: dist/**/*
