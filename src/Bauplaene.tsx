@@ -1,10 +1,15 @@
-// Blaupausen aus der Game.log (scverse #501), erste Stufe: nur lesen und anzeigen.
+// Blaupausen aus der Game.log (scverse #501): einlesen, zeigen, hochladen.
 //
-// Hochgeladen wird hier noch NICHTS. Das kommt mit /api/client/blaupausen (#500) und
-// dann nur mit sichtbarem Schalter. Diese Ansicht ist zum Pruefen, ob der Parser die
-// eigenen Logs sauber liest, und funktioniert deshalb auch ohne Anmeldung.
-import { useState } from "react";
+// Hochgeladen wird NUR, wenn der Nutzer es sieht und will: per Knopf, oder mit dem
+// Schalter "Automatisch", der sichtbar im Reiter steht und standardmaessig aus ist
+// (AGENTS.md: keine Uebertragung ohne Zustimmung).
+//
+// Der Server ist die Wahrheit, was schon auf CitizenHQ steht. Der Client merkt sich
+// nicht, was er geschickt hat; er schickt bei jedem Hochladen alles, der Server
+// schreibt nichts doppelt.
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { bauplaeneLesen, bauplaeneMelden, BASIS, type BauplanStand, type MeldeErgebnis } from "./hq";
 
 type Treffer = { name: string; sprache: "de" | "en"; zeit: string | null; datei: string };
 type DateiStand = { pfad: string; zeilen: number; treffer: number; fehler: string | null };
@@ -16,129 +21,324 @@ type ScanErgebnis = {
   verdaechtig: string[];
 };
 
+const ORDNER = "chq.spielordner";
+const AUTO = "chq.auto-upload";
+// Alle 60 s neu einlesen, wenn "Automatisch" an ist. Oft genug, dass eine neue
+// Blaupause kurz nach dem Erhalt auftaucht; selten genug, dass das Lesen der Logs
+// beim Spielen nicht auffaellt.
+const TAKT_MS = 60_000;
+
 const zahl = (n: number) => new Intl.NumberFormat("de-DE").format(n);
+const dateiname = (pfad: string) => pfad.split(/[\\/]/).pop() ?? pfad;
+const lesen = (k: string) => {
+  try {
+    return localStorage.getItem(k);
+  } catch {
+    return null;
+  }
+};
+const zeitText = (iso: string | null) =>
+  iso ? new Date(iso).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" }) : "";
 
-function dateiname(pfad: string) {
-  return pfad.split(/[\\/]/).pop() ?? pfad;
-}
-
-export function Bauplaene() {
-  const [ordner, setOrdner] = useState("");
-  const [laeuft, setLaeuft] = useState(false);
-  const [ergebnis, setErgebnis] = useState<ScanErgebnis | null>(null);
+export function Bauplaene({
+  token,
+  zurAnmeldung,
+  aufAbmeldung,
+}: {
+  token: string | null;
+  zurAnmeldung: () => void;
+  aufAbmeldung: () => void;
+}) {
+  const [ordner, setOrdner] = useState(() => lesen(ORDNER) ?? "");
+  const [auto, setAuto] = useState(() => lesen(AUTO) === "1");
+  const [scan, setScan] = useState<ScanErgebnis | null>(null);
+  const [server, setServer] = useState<BauplanStand | null>(null);
+  const [meldung, setMeldung] = useState<MeldeErgebnis | null>(null);
+  const [zuletzt, setZuletzt] = useState<Date | null>(null);
+  const [laeuft, setLaeuft] = useState<"scan" | "upload" | null>(null);
   const [fehler, setFehler] = useState<string | null>(null);
+  const [ordnerOffen, setOrdnerOffen] = useState(false);
   const [dateienOffen, setDateienOffen] = useState(false);
+  const [filter, setFilter] = useState<"alle" | "neu" | "problem">("alle");
+  const beschaeftigt = useRef(false);
 
-  const scannen = async () => {
-    setLaeuft(true);
+  const serverLaden = useCallback(async () => {
+    if (!token) return setServer(null);
+    try {
+      setServer(await bauplaeneLesen(token));
+    } catch (e) {
+      if ((e as Error).message === "ABGEMELDET") aufAbmeldung();
+      else setFehler((e as Error).message);
+    }
+  }, [token, aufAbmeldung]);
+
+  useEffect(() => {
+    void serverLaden();
+  }, [serverLaden]);
+
+  const einlesen = useCallback(async (): Promise<ScanErgebnis | null> => {
+    setLaeuft("scan");
     setFehler(null);
     try {
-      setErgebnis(await invoke<ScanErgebnis>("bauplaene_scannen", { ordner: ordner.trim() || null }));
+      const r = await invoke<ScanErgebnis>("bauplaene_scannen", { ordner: ordner.trim() || null });
+      setScan(r);
+      return r;
     } catch (e) {
-      setFehler(e instanceof Error ? e.message : String(e));
+      setFehler(`Logs lesen ging nicht: ${e instanceof Error ? e.message : String(e)}`);
+      return null;
     } finally {
-      setLaeuft(false);
+      setLaeuft(null);
+    }
+  }, [ordner]);
+
+  const hochladen = useCallback(
+    async (quelle?: ScanErgebnis | null) => {
+      const s = quelle ?? scan;
+      if (!token || !s || s.bauplaene.length === 0) return;
+      setLaeuft("upload");
+      setFehler(null);
+      try {
+        const r = await bauplaeneMelden(
+          token,
+          s.bauplaene.map((b) => ({ name: b.name, zeit: b.zeit })),
+        );
+        setMeldung(r);
+        setZuletzt(new Date());
+        await serverLaden();
+      } catch (e) {
+        if ((e as Error).message === "ABGEMELDET") aufAbmeldung();
+        else setFehler(`Hochladen ging nicht: ${(e as Error).message}`);
+      } finally {
+        setLaeuft(null);
+      }
+    },
+    [token, scan, serverLaden, aufAbmeldung],
+  );
+
+  // Automatisch: einlesen und hochladen im Takt. Laeuft ein Durchgang noch, faellt
+  // der naechste aus, statt sich zu stapeln.
+  useEffect(() => {
+    if (!auto || !token) return;
+    const durchgang = async () => {
+      if (beschaeftigt.current) return;
+      beschaeftigt.current = true;
+      try {
+        const r = await einlesen();
+        if (r) await hochladen(r);
+      } finally {
+        beschaeftigt.current = false;
+      }
+    };
+    void durchgang();
+    const id = window.setInterval(durchgang, TAKT_MS);
+    return () => window.clearInterval(id);
+    // einlesen/hochladen absichtlich nicht als Abhaengigkeit: sonst startet jede
+    // neue Antwort den Takt neu und liest sofort wieder.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auto, token]);
+
+  const autoSetzen = (an: boolean) => {
+    setAuto(an);
+    try {
+      localStorage.setItem(AUTO, an ? "1" : "0");
+    } catch {
+      /* Nur Bequemlichkeit: ohne Speicher gilt der Schalter bis zum Schliessen. */
+    }
+  };
+  const ordnerSpeichern = (wert: string) => {
+    setOrdner(wert);
+    try {
+      localStorage.setItem(ORDNER, wert);
+    } catch {
+      /* siehe oben */
     }
   };
 
-  const zeilenGesamt = ergebnis?.dateien.reduce((s, d) => s + d.zeilen, 0) ?? 0;
-  const dateiFehler = ergebnis?.dateien.filter((d) => d.fehler) ?? [];
+  // Status je Name: auf CitizenHQ, nicht zuordenbar, oder noch nicht hochgeladen.
+  const aufServer = useMemo(
+    () => new Set((server?.bauplaene ?? []).map((b) => b.name.toLowerCase())),
+    [server],
+  );
+  const probleme = useMemo(
+    () => new Set([...(meldung?.unbekannt ?? []), ...(meldung?.mehrdeutig ?? [])]),
+    [meldung],
+  );
+  const status = (name: string): "da" | "problem" | "neu" => {
+    if (probleme.has(name)) return "problem";
+    // Die Log schreibt "Sedulity (Ind/2/B)", der Server fuehrt "Sedulity".
+    const basis = name.replace(/\s*\([^()]*\/[^()]*\)\s*$/, "").toLowerCase();
+    return aufServer.has(basis) ? "da" : "neu";
+  };
+
+  const liste = (scan?.bauplaene ?? []).filter((b) => filter === "alle" || status(b.name) === filter);
+  const anzahlNeu = (scan?.bauplaene ?? []).filter((b) => status(b.name) === "neu").length;
+  const zeilen = scan?.dateien.reduce((s, d) => s + d.zeilen, 0) ?? 0;
+  const dateiFehler = scan?.dateien.filter((d) => d.fehler) ?? [];
 
   return (
-    <div className="panel">
-      <p className="kicker">▸ Blaupausen aus der Game.log</p>
-      <p className="leise" style={{ marginTop: "0.5rem" }}>
-        Liest deine Game.log und die alten Logs in logbackups und zeigt, welche Blaupausen
-        darin stehen. Es wird noch nichts hochgeladen.
-      </p>
-
-      <label className="leise" style={{ display: "block", marginTop: "1rem" }}>
-        Spielordner (leer lassen, dann wird gesucht)
-        <input
-          value={ordner}
-          onChange={(e) => setOrdner(e.target.value)}
-          placeholder="C:\Program Files\Roberts Space Industries\StarCitizen\LIVE"
-          className="eingabe"
-        />
-      </label>
-
-      <div className="reihe">
-        <button onClick={scannen} disabled={laeuft}>
-          {laeuft ? "Lese Logs …" : ergebnis ? "Neu einlesen" : "Logs einlesen"}
-        </button>
+    <div className="spalte">
+      <div className="kacheln">
+        <div className="kachel">
+          <span className="kachel-wert">{scan ? zahl(scan.bauplaene.length) : "?"}</span>
+          <span className="leise">in deinen Logs</span>
+        </div>
+        <div className="kachel">
+          <span className="kachel-wert">
+            {server ? zahl(server.bauplaene.length) : "?"}
+            {server && <span className="leise"> / {zahl(server.gesamt)}</span>}
+          </span>
+          <span className="leise">auf CitizenHQ</span>
+        </div>
+        <div className="kachel">
+          <span className={"kachel-wert" + (anzahlNeu > 0 ? " marke" : "")}>{scan ? zahl(anzahlNeu) : "?"}</span>
+          <span className="leise">noch nicht hochgeladen</span>
+        </div>
       </div>
 
-      {fehler && <p className="warnung" style={{ marginTop: "1rem" }}>{fehler}</p>}
+      <div className="panel">
+        <div className="reihe" style={{ marginTop: 0, alignItems: "center" }}>
+          <button onClick={() => void einlesen()} disabled={laeuft !== null}>
+            {laeuft === "scan" ? "Lese Logs …" : scan ? "Neu einlesen" : "Logs einlesen"}
+          </button>
+          {token ? (
+            <button
+              className="haupt"
+              onClick={() => void hochladen()}
+              disabled={laeuft !== null || !scan || scan.bauplaene.length === 0}
+            >
+              {laeuft === "upload" ? "Lade hoch …" : "Hochladen"}
+            </button>
+          ) : (
+            <button className="haupt" onClick={zurAnmeldung}>
+              Zum Hochladen anmelden
+            </button>
+          )}
+          <label className={"schalter" + (token ? "" : " aus")}>
+            <input
+              type="checkbox"
+              checked={auto && Boolean(token)}
+              disabled={!token}
+              onChange={(e) => autoSetzen(e.target.checked)}
+            />
+            Automatisch alle 60 s
+          </label>
+        </div>
 
-      {ergebnis && ergebnis.dateien.length === 0 && (
-        <p className="warnung" style={{ marginTop: "1rem" }}>
-          {ergebnis.ordner.length === 0
-            ? "Keinen Star-Citizen-Ordner gefunden. Trag oben den Ordner ein, in dem die Game.log liegt."
-            : `In ${ergebnis.ordner.join(", ")} liegt keine Game.log und kein logbackups-Ordner.`}
+        <p className="leise" style={{ marginTop: "0.75rem" }}>
+          Gelesen werden Game.log und die alten Logs in logbackups. Hochgeladen werden nur die
+          Namen der Blaupausen und wann du sie bekommen hast, an {BASIS.replace("https://", "")}.
+          {zuletzt && ` Zuletzt hochgeladen ${zuletzt.toLocaleTimeString("de-DE")}.`}
         </p>
+
+        {meldung && (
+          <p className="gut" style={{ marginTop: "0.5rem" }}>
+            {meldung.neu} neu eingetragen, {meldung.schonDa} waren schon da
+            {meldung.unbekannt.length + meldung.mehrdeutig.length > 0 &&
+              `, ${meldung.unbekannt.length + meldung.mehrdeutig.length} nicht zugeordnet`}
+            .
+          </p>
+        )}
+        {fehler && <p className="fehler" style={{ marginTop: "0.5rem" }}>{fehler}</p>}
+
+        <button className="link" onClick={() => setOrdnerOffen((o) => !o)}>
+          {ordnerOffen ? "Spielordner ausblenden" : `Spielordner: ${ordner || "automatisch suchen"}`}
+        </button>
+        {ordnerOffen && (
+          <label className="leise" style={{ display: "block", marginTop: "0.5rem" }}>
+            Ordner, in dem die Game.log liegt. Leer lassen, dann wird gesucht.
+            <input
+              value={ordner}
+              onChange={(e) => ordnerSpeichern(e.target.value)}
+              placeholder="C:\Program Files\Roberts Space Industries\StarCitizen\LIVE"
+              className="eingabe"
+            />
+          </label>
+        )}
+      </div>
+
+      {scan && scan.dateien.length === 0 && (
+        <div className="panel warnung">
+          {scan.ordner.length === 0
+            ? "Keinen Star-Citizen-Ordner gefunden. Trag unter Spielordner den Ordner ein, in dem die Game.log liegt."
+            : `In ${scan.ordner.join(", ")} liegt keine Game.log und kein logbackups-Ordner.`}
+        </div>
       )}
 
-      {ergebnis && ergebnis.dateien.length > 0 && (
-        <>
-          <p style={{ marginTop: "1.25rem", fontSize: "1.4rem" }}>
-            {zahl(ergebnis.bauplaene.length)} Blaupausen
-          </p>
-          <p className="leise">
-            {zahl(ergebnis.fundeGesamt)} Meldungen in {zahl(ergebnis.dateien.length)} Dateien,{" "}
-            {zahl(zeilenGesamt)} Zeilen gelesen
-          </p>
-          <p className="leise mono" style={{ fontSize: "0.68rem", marginTop: "0.25rem" }}>
-            {ergebnis.ordner.join(" | ")}
-          </p>
-
-          {dateiFehler.length > 0 && (
-            <div className="warnung" style={{ marginTop: "0.75rem" }}>
-              {dateiFehler.map((d) => (
-                <p key={d.pfad}>
-                  {dateiname(d.pfad)}: {d.fehler}
-                </p>
-              ))}
-            </div>
+      {scan && (scan.verdaechtig.length > 0 || probleme.size > 0 || dateiFehler.length > 0) && (
+        <div className="panel">
+          <p className="kicker warnung">Nicht sauber gelesen</p>
+          {dateiFehler.map((d) => (
+            <p key={d.pfad} className="warnung">
+              {dateiname(d.pfad)}: {d.fehler}
+            </p>
+          ))}
+          {probleme.size > 0 && (
+            <p className="leise" style={{ marginTop: "0.5rem" }}>
+              {probleme.size} Namen kennt CitizenHQ nicht eindeutig. Sie stehen in der Liste mit
+              „nicht zugeordnet“. Hak sie auf der Webseite von Hand ab.
+            </p>
           )}
-
-          {ergebnis.verdaechtig.length > 0 && (
-            <div style={{ marginTop: "1rem" }}>
-              <p className="kicker" style={{ color: "var(--amber)" }}>
-                ▸ Nicht erkannt ({ergebnis.verdaechtig.length})
+          {scan.verdaechtig.length > 0 && (
+            <>
+              <p className="leise" style={{ marginTop: "0.5rem" }}>
+                Diese Zeilen klingen nach Blaupause, wurden aber nicht erkannt. Schick sie uns,
+                dann passen wir das an.
               </p>
-              <p className="leise">
-                Diese Zeilen klingen nach Blaupause, der Parser hat sie aber nicht gelesen.
-                Schick sie uns, dann passen wir ihn an.
-              </p>
-              {ergebnis.verdaechtig.map((z, i) => (
+              {scan.verdaechtig.map((z, i) => (
                 <p key={i} className="mono zeile">{z}</p>
               ))}
-            </div>
+            </>
           )}
+        </div>
+      )}
 
-          <ul className="liste">
-            {ergebnis.bauplaene.map((b) => (
-              <li key={b.name}>
-                <span>{b.name}</span>
-                <span className="leise mono" title={b.datei}>
-                  {b.sprache.toUpperCase()} {b.zeit ? b.zeit.slice(0, 16).replace("T", " ") : ""}
-                </span>
-              </li>
-            ))}
-          </ul>
-
-          <div className="reihe">
-            <button className="stumm" onClick={() => setDateienOffen((o) => !o)}>
-              {dateienOffen ? "Dateien ausblenden" : "Gelesene Dateien zeigen"}
-            </button>
+      {scan && scan.bauplaene.length > 0 && (
+        <div className="panel">
+          <div className="reihe" style={{ marginTop: 0, justifyContent: "space-between", alignItems: "baseline" }}>
+            <p className="leise">
+              {zahl(scan.fundeGesamt)} Meldungen in {zahl(scan.dateien.length)} Dateien, {zahl(zeilen)} Zeilen
+            </p>
+            <div className="umschalter">
+              {(
+                [
+                  ["alle", "Alle"],
+                  ["neu", "Nicht hochgeladen"],
+                  ["problem", "Nicht zugeordnet"],
+                ] as const
+              ).map(([wert, text]) => (
+                <button key={wert} aria-pressed={filter === wert} onClick={() => setFilter(wert)}>
+                  {text}
+                </button>
+              ))}
+            </div>
           </div>
+          <ul className="liste">
+            {liste.map((b) => {
+              const st = status(b.name);
+              return (
+                <li key={b.name}>
+                  <span>{b.name}</span>
+                  <span className="leise mono" title={b.datei}>
+                    {zeitText(b.zeit)}{" "}
+                    <span className={"etikett " + st}>
+                      {st === "da" ? "auf CitizenHQ" : st === "problem" ? "nicht zugeordnet" : "neu"}
+                    </span>
+                  </span>
+                </li>
+              );
+            })}
+            {liste.length === 0 && <li className="leise">Nichts in diesem Filter.</li>}
+          </ul>
+          <button className="link" onClick={() => setDateienOffen((o) => !o)}>
+            {dateienOffen ? "Dateien ausblenden" : "Gelesene Dateien zeigen"}
+          </button>
           {dateienOffen &&
-            ergebnis.dateien.map((d) => (
+            scan.dateien.map((d) => (
               <p key={d.pfad} className="leise mono zeile" title={d.pfad}>
                 {dateiname(d.pfad)}: {zahl(d.zeilen)} Zeilen, {d.treffer} Treffer
               </p>
             ))}
-        </>
+        </div>
       )}
     </div>
   );

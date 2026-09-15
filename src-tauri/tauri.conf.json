@@ -13,10 +13,12 @@
     "windows": [
       {
         "title": "CitizenHQ",
-        "width": 560,
-        "height": 720,
+        "width": 980,
+        "height": 760,
         "resizable": true,
-        "theme": "Dark"
+        "theme": "Dark",
+        "minWidth": 640,
+        "minHeight": 520
       }
     ],
     "security": {

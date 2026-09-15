@@ -225,3 +225,49 @@ export async function schiffeSuchen(token: string, q: string): Promise<SuchTreff
   );
   return daten.schiffe;
 }
+
+// ----------------------------------------------------------- Blaupausen (#500)
+
+export interface BauplanBesitz {
+  uuid: string;
+  name: string;
+  quelle: "manual" | "log" | string;
+  erhaltenAm: string | null;
+}
+
+export interface BauplanStand {
+  gesamt: number;
+  bauplaene: BauplanBesitz[];
+}
+
+/** Antwort auf eine Meldung. Die Namen, die der Server nicht zuordnen konnte, kommen
+ *  zurueck, damit sie sichtbar werden statt still zu fehlen. */
+export interface MeldeErgebnis {
+  neu: number;
+  schonDa: number;
+  unbekannt: string[];
+  mehrdeutig: string[];
+}
+
+export async function bauplaeneLesen(token: string): Promise<BauplanStand> {
+  return auspacken<BauplanStand>(
+    await tauriFetch(`${BASIS}/api/client/blaupausen`, {
+      headers: { authorization: `Bearer ${token}` },
+    }),
+  );
+}
+
+/** Schickt ALLE gefundenen Namen. Der Server schreibt nichts doppelt, der Client
+ *  muss sich also nicht merken, was er schon geschickt hat. */
+export async function bauplaeneMelden(
+  token: string,
+  bauplaene: { name: string; zeit: string | null }[],
+): Promise<MeldeErgebnis> {
+  return auspacken<MeldeErgebnis>(
+    await tauriFetch(`${BASIS}/api/client/blaupausen`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ bauplaene }),
+    }),
+  );
+}
