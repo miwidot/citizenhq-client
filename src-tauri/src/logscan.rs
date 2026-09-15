@@ -9,9 +9,10 @@
 // Tauchen dort welche auf, stimmt der erkannte Text nicht (andere Sprache, neues Format).
 use crate::logparser::{BauplanParser, Sprache};
 use serde::Serialize;
+use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 /// Wie viele verdaechtige Zeilen hoechstens zurueckkommen. Es geht um Beispiele,
@@ -19,6 +20,32 @@ use std::path::{Path, PathBuf};
 const MAX_VERDAECHTIG: usize = 20;
 
 const KANAELE: [&str; 5] = ["LIVE", "PTU", "EPTU", "HOTFIX", "TECH-PREVIEW"];
+
+/// Was von einer Datei schon gelesen wurde. Damit ein neuer Scan nur liest, was neu ist:
+/// Backup-Logs aendern sich nie mehr und werden uebersprungen, die laufende Game.log
+/// wird ab `gelesen` weitergelesen.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DateiMerker {
+    pub groesse: u64,
+    pub geaendert_ms: u64,
+    /// Bis zu diesem Byte gelesen (immer an einem Zeilenende).
+    pub gelesen: u64,
+    /// Die ersten Bytes der Datei. Startet das Spiel neu, entsteht eine NEUE Game.log
+    /// unter demselben Namen; waechst sie ueber die alte Lesestelle hinaus, sagt die
+    /// Groesse allein das nicht. Die erste Zeile (mit Startzeit) schon.
+    #[serde(default)]
+    pub kopf: String,
+}
+
+const KOPF_BYTES: usize = 256;
+
+fn kopf_lesen(pfad: &Path) -> String {
+    use std::io::Read;
+    let mut puffer = vec![0u8; KOPF_BYTES];
+    let n = File::open(pfad).and_then(|mut f| f.read(&mut puffer)).unwrap_or(0);
+    String::from_utf8_lossy(&puffer[..n]).into_owned()
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,6 +64,8 @@ pub struct DateiStand {
     pub zeilen: usize,
     pub treffer: usize,
     pub fehler: Option<String>,
+    /// unveraendert (uebersprungen), weiter (ab letzter Stelle), neu (von vorn)
+    pub art: &'static str,
 }
 
 #[derive(Serialize)]
@@ -49,6 +78,9 @@ pub struct ScanErgebnis {
     /// Alle Funde, auch mehrfache (derselbe Bauplan in mehreren Sitzungen).
     pub funde_gesamt: usize,
     pub verdaechtig: Vec<String>,
+    /// Stand je Datei nach diesem Scan, zum Speichern fuer den naechsten.
+    #[serde(skip)]
+    pub merker: BTreeMap<String, DateiMerker>,
 }
 
 /// Kandidaten fuer den Spielordner (der Ordner, in dem Game.log liegt).
@@ -118,7 +150,7 @@ fn klingt_nach_bauplan(zeile: &str) -> bool {
         && (zeile.contains("Bauplan") || zeile.to_ascii_lowercase().contains("blueprint"))
 }
 
-pub fn scannen(eigener_ordner: Option<String>) -> ScanErgebnis {
+pub fn scannen(eigener_ordner: Option<String>, bekannt: &BTreeMap<String, DateiMerker>) -> ScanErgebnis {
     let ordner: Vec<PathBuf> = match eigener_ordner.map(|s| s.trim().to_string()) {
         Some(s) if !s.is_empty() => {
             let p = PathBuf::from(&s);
@@ -133,12 +165,35 @@ pub fn scannen(eigener_ordner: Option<String>) -> ScanErgebnis {
     let mut erste: BTreeMap<String, Treffer> = BTreeMap::new();
     let mut funde_gesamt = 0;
     let mut verdaechtig = Vec::new();
+    let mut merker = BTreeMap::new();
 
     for o in &ordner {
         for pfad in log_dateien(o) {
             let anzeige = pfad.display().to_string();
-            let mut stand = DateiStand { pfad: anzeige.clone(), zeilen: 0, treffer: 0, fehler: None };
-            let datei = match File::open(&pfad) {
+            let meta = std::fs::metadata(&pfad).ok();
+            let groesse = meta.as_ref().map_or(0, |m| m.len());
+            let geaendert_ms = meta
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_millis() as u64);
+            let alt = bekannt.get(&anzeige);
+            let kopf = kopf_lesen(&pfad);
+
+            // Unveraendert: ueberspringen. Gewachsen: ab der letzten Stelle weiter.
+            // Kleiner geworden: neue Datei unter altem Namen (neue Sitzung), von vorn.
+            let (start, art) = match alt {
+                Some(a) if a.kopf == kopf && a.groesse == groesse && a.geaendert_ms == geaendert_ms && a.gelesen == groesse => {
+                    merker.insert(anzeige.clone(), a.clone());
+                    dateien.push(DateiStand { pfad: anzeige, zeilen: 0, treffer: 0, fehler: None, art: "unveraendert" });
+                    continue;
+                }
+                // Anfang gleich und nicht geschrumpft: dieselbe Datei, gewachsen. Die
+                // ersten 256 Bytes muessen dafuer schon vollstaendig gelesen sein.
+                Some(a) if a.kopf == kopf && groesse >= a.gelesen && a.gelesen as usize >= KOPF_BYTES => (a.gelesen, "weiter"),
+                _ => (0, "neu"),
+            };
+            let mut stand = DateiStand { pfad: anzeige.clone(), zeilen: 0, treffer: 0, fehler: None, art };
+            let mut datei = match File::open(&pfad) {
                 Ok(f) => f,
                 Err(e) => {
                     stand.fehler = Some(e.to_string());
@@ -146,6 +201,14 @@ pub fn scannen(eigener_ordner: Option<String>) -> ScanErgebnis {
                     continue;
                 }
             };
+            if start > 0 {
+                if let Err(e) = datei.seek(SeekFrom::Start(start)) {
+                    stand.fehler = Some(format!("Springen an Byte {start}: {e}"));
+                    dateien.push(stand);
+                    continue;
+                }
+            }
+            let mut gelesen = start;
             // Neuer Parser je Datei: die Wiederholungs-Sperre gilt innerhalb einer Sitzung.
             let mut parser = BauplanParser::default();
             let mut leser = BufReader::new(datei);
@@ -154,7 +217,10 @@ pub fn scannen(eigener_ordner: Option<String>) -> ScanErgebnis {
                 puffer.clear();
                 match leser.read_until(b'\n', &mut puffer) {
                     Ok(0) => break,
-                    Ok(_) => {}
+                    // Halbe letzte Zeile (das Spiel schreibt gerade): nicht zaehlen, beim
+                    // naechsten Mal ab ihrem Anfang neu lesen.
+                    Ok(_) if puffer.last() != Some(&b'\n') => break,
+                    Ok(n) => gelesen += n as u64,
                     Err(e) => {
                         stand.fehler = Some(format!("abgebrochen nach Zeile {}: {e}", stand.zeilen));
                         break;
@@ -193,6 +259,9 @@ pub fn scannen(eigener_ordner: Option<String>) -> ScanErgebnis {
                     }
                 }
             }
+            if stand.fehler.is_none() {
+                merker.insert(anzeige, DateiMerker { groesse, geaendert_ms, gelesen, kopf });
+            }
             dateien.push(stand);
         }
     }
@@ -206,6 +275,7 @@ pub fn scannen(eigener_ordner: Option<String>) -> ScanErgebnis {
         bauplaene,
         funde_gesamt,
         verdaechtig,
+        merker,
     }
 }
 
@@ -231,7 +301,24 @@ mod tests {
         );
         std::fs::write(dir.join("Game.log"), aktuell).unwrap();
 
-        let r = scannen(Some(dir.display().to_string()));
+        let r = scannen(Some(dir.display().to_string()), &BTreeMap::new());
+
+        // Zweiter Scan mit Merker: nichts neu gelesen
+        let r2 = scannen(Some(dir.display().to_string()), &r.merker);
+        assert!(r2.dateien.iter().all(|d| d.art == "unveraendert"), "{:?}", r2.dateien.iter().map(|d| d.art).collect::<Vec<_>>());
+        assert_eq!(r2.funde_gesamt, 0);
+
+        // Game.log waechst: nur der neue Teil wird gelesen
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().append(true).open(dir.join("Game.log")).unwrap();
+        f.write_all(b"<2026-09-15T13:00:00.000Z> [Notice] <SHUDEvent_OnNotification> Added notification \"Bauplan erhalten: Neu: \" [9] to queue.\n<2026-09-15T13:00:01.000Z> halbe Zeile ohne Ende").unwrap();
+        drop(f);
+        let r3 = scannen(Some(dir.display().to_string()), &r.merker);
+        let log = r3.dateien.iter().find(|d| d.pfad.ends_with("Game.log")).unwrap();
+        assert_eq!(log.art, "weiter");
+        assert_eq!(log.zeilen, 1, "nur die neue ganze Zeile, die halbe nicht");
+        assert_eq!(r3.bauplaene.iter().map(|b| b.name.as_str()).collect::<Vec<_>>(), ["Neu"]);
+
         std::fs::remove_dir_all(&dir).ok();
 
         assert_eq!(r.dateien.len(), 2);

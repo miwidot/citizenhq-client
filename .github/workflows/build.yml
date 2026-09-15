@@ -1,7 +1,8 @@
 # Test-Builds fuer Windows und Linux (scverse #502, erste Stufe).
 #
-# Jeder Push auf main wird ein GitHub-Release (Tag build-<Laufnummer>). Die Webseite
-# verlinkt /releases/latest, zeigt also immer den neuesten Build.
+# Ein Release entsteht nur, wenn die Version in src-tauri/tauri.conf.json neu ist
+# (Tag v<Version>). Sonst baut und testet der Lauf nur. Die Webseite verlinkt
+# /releases/latest, zeigt also immer die neueste Version.
 # Noch unsigniert: Windows zeigt SmartScreen ("Unbekannter Herausgeber").
 # Signieren und Auto-Update kommen mit scverse #502.
 name: build
@@ -71,23 +72,33 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+      - name: Version pruefen
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=$(jq -r .version src-tauri/tauri.conf.json)
+          echo "tag=v$v" >> "$GITHUB_OUTPUT"
+          if gh release view "v$v" >/dev/null 2>&1; then
+            echo "v$v gibt es schon, kein neues Release."
+            echo "neu=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "neu=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/download-artifact@v4
+        if: steps.version.outputs.neu == 'true'
         with:
           path: dist
           merge-multiple: true
-      # Leerzeichen in Dateinamen machen Download-Links unhandlich
-      - run: |
-          cd dist
-          for f in *; do mv -n "$f" "${f// /_}" 2>/dev/null || true; done
-          ls -la
       - uses: softprops/action-gh-release@v2
+        if: steps.version.outputs.neu == 'true'
         with:
-          tag_name: build-${{ github.run_number }}
-          name: CitizenHQ Build ${{ github.run_number }}
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: CitizenHQ ${{ steps.version.outputs.tag }}
           target_commitish: ${{ github.sha }}
           make_latest: true
           body: |
-            Test-Build von ${{ github.sha }}.
-            Windows: .exe (Installer) oder .msi. Nicht signiert, Windows fragt deshalb nach: "Weitere Informationen", dann "Trotzdem ausfuehren".
+            Windows: .exe (Installer) oder .msi. Noch nicht signiert, Windows fragt deshalb nach: "Weitere Informationen", dann "Trotzdem ausfuehren".
             Linux: .AppImage oder .deb.
           files: dist/**/*
