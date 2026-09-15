@@ -1,6 +1,9 @@
 // Systemteil des Clients. Bewusst duenn: alles, was ohne Betriebssystem-Zugriff geht,
 // liegt in der Oberflaeche. Hier kommt spaeter dazu, was der Browser nicht kann —
 // Game.log lesen, Tray, Autostart, Token im Schluesselbund.
+// Erkennt erhaltene Bauplaene in Game.log-Zeilen (Blaupausen-Tracker, scverse #498).
+pub mod logparser;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
