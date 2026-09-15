@@ -101,6 +101,10 @@ jobs:
       - name: latest.json fuer den Updater
         if: steps.version.outputs.neu == 'true'
         run: |
+          # Die Artefakte behalten ihre Unterordner (nsis/, appimage/): erst flach legen.
+          find dist -mindepth 2 -type f -exec mv -t dist {} +
+          find dist -mindepth 1 -type d -empty -delete
+          ls -la dist
           tag=${{ steps.version.outputs.tag }}
           basis="https://github.com/${{ github.repository }}/releases/download/$tag"
           exe=$(cd dist && ls *-setup.exe)
