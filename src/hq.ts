@@ -6,7 +6,7 @@
 
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 
-export const BASIS = "https://dev.citizenhq.space";
+export const BASIS = "https://citizenhq.space";
 const CLIENT_ID = "citizenhq-desktop";
 
 export interface GeraeteCode {
