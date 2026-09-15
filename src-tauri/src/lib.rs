@@ -7,6 +7,8 @@ pub mod logparser;
 pub mod logscan;
 // Merkt sich gefundene und hochgeladene Blaupausen in bauplaene.json.
 pub mod bestand;
+// Stille Updates aus den GitHub-Releases.
+mod update;
 
 use std::sync::Mutex;
 use tauri::Manager;
@@ -14,7 +16,7 @@ use tauri::Manager;
 /// Serialisiert Lesen/Aendern/Schreiben der Bestandsdatei. Automatischer Durchgang und
 /// Knopfdruck koennen sich ueberschneiden; ohne Sperre gewinnt der letzte Schreiber
 /// und ein Upload-Stand ginge verloren.
-struct BestandSperre(Mutex<()>);
+pub(crate) struct BestandSperre(pub(crate) Mutex<()>);
 
 fn bestand_pfad(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     app.path()
@@ -100,7 +102,13 @@ pub fn run() {
         // lichkeit: der WebView unterliegt der Same-Origin-Regel, und CitizenHQ setzt
         // (zu Recht) keine CORS-Header fuer fremde Herkuenfte.
         .plugin(tauri_plugin_http::init())
+        // Updates aus den GitHub-Releases, signiert (Schluessel in tauri.conf.json).
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(BestandSperre(Mutex::new(())))
+        .setup(|app| {
+            update::starten(app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             bauplaene_aktualisieren,
             bestand_lesen,

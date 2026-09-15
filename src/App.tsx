@@ -10,6 +10,8 @@ import { Hangar } from "./Hangar";
 import { Bauplaene } from "./Bauplaene";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { listen } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
 import {
   codeAnfordern,
   tokenHolen,
@@ -32,6 +34,13 @@ type Zustand =
 
 type Reiter = "blaupausen" | "hangar" | "konto";
 
+// Vom Updater im Rust-Teil (src-tauri/src/update.rs). Nur Anzeige: Updates laufen ohne
+// Nachfrage, der Nutzer soll aber sehen, warum die App gleich neu startet.
+type UpdateStand =
+  | { art: "laedt"; version: string }
+  | { art: "installiert"; version: string }
+  | { art: "fehler"; text: string };
+
 const SPEICHER = "chq.token";
 
 export default function App() {
@@ -41,6 +50,16 @@ export default function App() {
   // zwischengespeicherte Rolle waere beim naechsten Wechsel falsch.
   const [stand, setStand] = useState<MeinStand | null>(null);
   const [beschaeftigt, setBeschaeftigt] = useState(false);
+  const [version, setVersion] = useState<string | null>(null);
+  const [update, setUpdate] = useState<UpdateStand | null>(null);
+
+  useEffect(() => {
+    void getVersion().then(setVersion).catch(() => {});
+    const aus = listen<UpdateStand>("update", (e) => setUpdate(e.payload));
+    return () => {
+      void aus.then((f) => f());
+    };
+  }, []);
   // Wird auf true gesetzt, sobald der Nutzer abbricht; laufende Abfragen sehen das.
   const abbrechen = useRef(false);
 
@@ -134,6 +153,13 @@ export default function App() {
             </button>
           ))}
         </nav>
+        {update && update.art !== "fehler" && (
+          <span className="leise" role="status">
+            {update.art === "laedt"
+              ? `Update ${update.version} wird geladen`
+              : `Update ${update.version} wird installiert, die App startet neu`}
+          </span>
+        )}
         <button className="konto-chip" onClick={() => setReiter("konto")}>
           <span className={"punkt" + (token ? " an" : "")} />
           {zustand.art === "angemeldet" ? zustand.name : "Nicht angemeldet"}
@@ -296,6 +322,10 @@ export default function App() {
                 </p>
               </div>
             )}
+            <p className="leise" style={{ textAlign: "center" }}>
+              CitizenHQ-App {version ?? ""}. Updates kommen automatisch.
+              {update?.art === "fehler" && ` Letzte Prüfung ging nicht: ${update.text}`}
+            </p>
           </div>
         )}
       </main>

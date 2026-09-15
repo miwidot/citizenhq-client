@@ -55,7 +55,12 @@ jobs:
         working-directory: src-tauri
         run: cargo test --lib
 
+      # Signiert die Update-Pakete (.sig). Ohne den Schluessel nimmt keine installierte
+      # App das Update an. Schluessel: GitHub-Secret, Sicherung beim Owner.
       - run: pnpm tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       - uses: actions/upload-artifact@v4
         with:
@@ -63,9 +68,9 @@ jobs:
           if-no-files-found: error
           path: |
             src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/nsis/*.exe.sig
             src-tauri/target/release/bundle/appimage/*.AppImage
-            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/appimage/*.AppImage.sig
 
   release:
     needs: build
@@ -91,6 +96,24 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      # latest.json: hier schaut jede installierte App nach (Endpoint in tauri.conf.json).
+      # Die Signatur muss als INHALT drinstehen, ein Pfad oder Link gilt nicht.
+      - name: latest.json fuer den Updater
+        if: steps.version.outputs.neu == 'true'
+        run: |
+          tag=${{ steps.version.outputs.tag }}
+          basis="https://github.com/${{ github.repository }}/releases/download/$tag"
+          exe=$(cd dist && ls *-setup.exe)
+          img=$(cd dist && ls *.AppImage)
+          jq -n \
+            --arg v "${tag#v}" \
+            --arg d "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg wurl "$basis/$exe" --rawfile wsig "dist/$exe.sig" \
+            --arg lurl "$basis/$img" --rawfile lsig "dist/$img.sig" \
+            '{version:$v, pub_date:$d, notes:"", platforms:{
+               "windows-x86_64":{url:$wurl, signature:$wsig},
+               "linux-x86_64":{url:$lurl, signature:$lsig}}}' > dist/latest.json
+          cat dist/latest.json
       - uses: softprops/action-gh-release@v2
         if: steps.version.outputs.neu == 'true'
         with:
@@ -99,6 +122,7 @@ jobs:
           target_commitish: ${{ github.sha }}
           make_latest: true
           body: |
-            Windows: .exe (Installer) oder .msi. Noch nicht signiert, Windows fragt deshalb nach: "Weitere Informationen", dann "Trotzdem ausfuehren".
-            Linux: .AppImage oder .deb.
+            Windows: CitizenHQ_..._x64-setup.exe einmal ausfuehren. Noch nicht signiert, Windows fragt deshalb nach: "Weitere Informationen", dann "Trotzdem ausfuehren".
+            Linux: .AppImage laden, ausfuehrbar machen, starten.
+            Danach aktualisiert sich die App selbst.
           files: dist/**/*
