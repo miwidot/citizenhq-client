@@ -3,6 +3,17 @@
 // Game.log lesen, Tray, Autostart, Token im Schluesselbund.
 // Erkennt erhaltene Bauplaene in Game.log-Zeilen (Blaupausen-Tracker, scverse #498).
 pub mod logparser;
+// Findet die Log-Dateien und liest sie komplett (scverse #501).
+pub mod logscan;
+
+/// Liest alle Game.log-Dateien und liefert die erkannten Bauplaene. Laeuft in einem
+/// eigenen Thread: eine grosse Log auf dem Hauptthread wuerde das Fenster einfrieren.
+#[tauri::command]
+async fn bauplaene_scannen(ordner: Option<String>) -> Result<logscan::ScanErgebnis, String> {
+    tauri::async_runtime::spawn_blocking(move || logscan::scannen(ordner))
+        .await
+        .map_err(|e| format!("Scan abgebrochen: {e}"))
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -16,6 +27,7 @@ pub fn run() {
         // diese Beschraenkung nicht — und das Token muss spaeter ohnehin dorthin, wo
         // die Seite es nicht auslesen kann.
         .plugin(tauri_plugin_http::init())
+        .invoke_handler(tauri::generate_handler![bauplaene_scannen])
         .run(tauri::generate_context!())
         .expect("Tauri konnte nicht starten");
 }

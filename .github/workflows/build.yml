@@ -1,0 +1,63 @@
+# Test-Builds fuer Windows und Linux (scverse #502, erste Stufe).
+#
+# Bewusst noch KEIN Release und keine Signatur: die Dateien landen nur als Artefakt am
+# Lauf (Actions -> Lauf -> Artifacts). Windows zeigt beim Start deshalb SmartScreen
+# ("Unbekannter Herausgeber"). Signieren und Auto-Update kommen mit #502.
+name: build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows
+          - os: ubuntu-22.04
+            name: linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux-Abhaengigkeiten fuer Tauri
+        if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: pnpm install --frozen-lockfile
+
+      # Parser-Tests auf dem echten Zielsystem: Pfade und Zeilenenden sind unter
+      # Windows anders als auf dem Entwicklerrechner.
+      - name: Tests
+        working-directory: src-tauri
+        run: cargo test --lib
+
+      - run: pnpm tauri build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: citizenhq-client-${{ matrix.name }}
+          if-no-files-found: error
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/deb/*.deb

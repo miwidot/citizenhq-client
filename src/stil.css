@@ -114,3 +114,14 @@ input {
 }
 input:focus { border-color: var(--holo); }
 input::placeholder { color: var(--ink-faint); }
+
+/* Blaupausen aus der Game.log (#501) */
+.eingabe { display: block; width: 100%; margin-top: 0.35rem; }
+.liste { list-style: none; padding: 0; margin: 1rem 0 0; border-top: 1px solid var(--line); }
+.liste li {
+  display: flex; justify-content: space-between; gap: 1rem;
+  padding: 0.45rem 0; border-bottom: 1px solid var(--line); font-size: 0.9rem;
+}
+.liste li > :last-child { white-space: nowrap; }
+/* Rohe Log-Zeilen: umbrechen statt das Fenster seitlich zu sprengen */
+.zeile { font-size: 0.66rem; word-break: break-all; margin: 0.35rem 0 0; color: var(--ink-soft); }

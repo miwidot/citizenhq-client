@@ -3,6 +3,7 @@
 // Mehr kann er noch nicht — die Endpunkte für Hangar und Lager gibt es serverseitig
 // noch nicht (siehe AGENTS.md §6). Das ist Absicht: erst der Weg hinein, dann die Inhalte.
 import { Hangar } from "./Hangar";
+import { Bauplaene } from "./Bauplaene";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -175,6 +176,9 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Log-Scan braucht keine Anmeldung: er liest nur lokal (#501). */}
+      <Bauplaene />
 
       {zustand.art === "angemeldet" && (
         <Hangar token={zustand.token} aufAbmeldung={abmelden} />
