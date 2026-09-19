@@ -36,6 +36,10 @@ pub struct Eintrag {
 #[serde(rename_all = "camelCase")]
 pub struct Bestand {
     pub format: u32,
+    /// Mit welcher Fassung der Erkennung die Namen hier gelesen wurden
+    /// (logparser::PARSER_VERSION). 0 = eine Fassung vor dieser Zaehlung.
+    #[serde(default)]
+    pub parser_version: u32,
     pub bauplaene: BTreeMap<String, Eintrag>,
     /// Was je Log-Datei schon gelesen ist, damit der naechste Scan nur Neues liest.
     #[serde(default)]
@@ -70,7 +74,7 @@ pub fn lesen(pfad: &Path) -> (Bestand, Option<String>) {
     let text = match fs::read_to_string(pfad) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return (Bestand { format: FORMAT, ..Default::default() }, None)
+            return (Bestand { format: FORMAT, parser_version: crate::logparser::PARSER_VERSION, ..Default::default() }, None)
         }
         Err(e) => return (Bestand { format: FORMAT, ..Default::default() }, Some(format!("{} nicht lesbar: {e}", pfad.display()))),
     };
@@ -146,6 +150,37 @@ pub fn rueckmeldung_merken(b: &mut Bestand, r: Vec<Rueckmeldung>, jetzt: &str) {
     }
 }
 
+/// Nach einer Verbesserung der Erkennung aufraeumen.
+///
+/// WARUM DAS NOETIG IST: die App merkt sich, wie weit jede Log gelesen ist. Ohne
+/// diesen Schritt bliebe ein mit einer kaputten Fassung gelesener Name fuer immer
+/// stehen — die Datei gilt als gelesen, also wird sie nie wieder angefasst.
+///
+/// Was passiert: die Lesestellen fallen weg (alle Logs werden neu gelesen), und
+/// Eintraege, die der Server NICHT sauber zuordnen konnte, fliegen raus. Genau das
+/// sind die Verstuemmelten ("R97" statt `R97 "Kismet" Shotgun`) — ein abgeschnittener
+/// Name trifft keine Blaupause. Eintraege mit Status "ok" bleiben: sie sind zugeordnet,
+/// und wer sie loeschte, wuerde sie beim naechsten Hochladen erneut melden.
+///
+/// Was es NICHT tut: die Datei loeschen. Wer seine alten Logs nicht mehr hat, wuerde
+/// damit seinen ganzen Stand verlieren.
+pub fn auf_parser_version_heben(b: &mut Bestand, version: u32) -> Option<String> {
+    if b.parser_version >= version {
+        return None;
+    }
+    let vorher = b.bauplaene.len();
+    b.bauplaene.retain(|_, e| e.status.as_deref() == Some("ok"));
+    let verworfen = vorher - b.bauplaene.len();
+    let dateien = b.dateien.len();
+    b.dateien.clear();
+    let alt = b.parser_version;
+    b.parser_version = version;
+    Some(format!(
+        "Erkennung verbessert (Fassung {alt} -> {version}): {dateien} Log-Datei(en) werden neu \
+         gelesen, {verworfen} nicht zugeordnete(r) Eintrag/Eintraege verworfen."
+    ))
+}
+
 pub fn pfad_in(ordner: PathBuf) -> PathBuf {
     ordner.join(DATEI)
 }
@@ -192,6 +227,32 @@ mod tests {
         assert_eq!(b3.bauplaene["Arrow"].hochgeladen.as_deref(), Some("T4"));
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn neue_parser_version_raeumt_auf() {
+        let mut b = Bestand { format: FORMAT, parser_version: 1, ..Default::default() };
+        funde_merken(&mut b, vec![fund("R97", None), fund("Arrow", None)], "T1");
+        rueckmeldung_merken(
+            &mut b,
+            vec![
+                Rueckmeldung { name: "R97".into(), status: "unbekannt".into() },
+                Rueckmeldung { name: "Arrow".into(), status: "ok".into() },
+            ],
+            "T2",
+        );
+        b.dateien.insert("Game.log".into(), Default::default());
+
+        let text = auf_parser_version_heben(&mut b, 2).expect("Aufraeumen erwartet");
+        assert!(text.contains("1 -> 2"), "{text}");
+        // Der verstuemmelte Name ist weg, der zugeordnete bleibt.
+        assert!(!b.bauplaene.contains_key("R97"));
+        assert!(b.bauplaene.contains_key("Arrow"));
+        // Lesestellen weg: alle Logs werden neu gelesen.
+        assert!(b.dateien.is_empty());
+        assert_eq!(b.parser_version, 2);
+        // Zweiter Aufruf macht nichts mehr.
+        assert!(auf_parser_version_heben(&mut b, 2).is_none());
     }
 
     #[test]

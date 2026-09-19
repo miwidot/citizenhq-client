@@ -55,6 +55,9 @@ async fn bauplaene_aktualisieren(
         let _g = sperre.0.lock().map_err(|_| "Bestand gesperrt (vorheriger Fehler).".to_string())?;
         let pfad = bestand_pfad(&app)?;
         let (mut b, warnung) = bestand::lesen(&pfad);
+        // Erst aufraeumen, dann lesen: nach einer verbesserten Erkennung sind die
+        // Lesestellen ungueltig (sonst bleibt der alte Name fuer immer stehen).
+        let hinweis = bestand::auf_parser_version_heben(&mut b, logparser::PARSER_VERSION);
         let bekannt = if von_vorn { Default::default() } else { b.dateien.clone() };
         let mut scan = logscan::scannen(ordner, &bekannt);
         bestand::funde_merken(
@@ -68,7 +71,17 @@ async fn bauplaene_aktualisieren(
         // Lesestellen anderer Ordner (z. B. PTU, gerade nicht gefunden) nicht wegwerfen.
         b.dateien.extend(std::mem::take(&mut scan.merker));
         bestand::schreiben(&pfad, &b)?;
-        Ok(bestand::BestandAntwort { pfad: pfad.display().to_string(), bestand: b, scan: Some(scan), warnung })
+        Ok(bestand::BestandAntwort {
+            pfad: pfad.display().to_string(),
+            bestand: b,
+            scan: Some(scan),
+            // Beides kann gleichzeitig anfallen; der Hinweis zur neuen Erkennung
+            // verdraengt keine Warnung ueber eine beschaedigte Datei.
+            warnung: match (warnung, hinweis) {
+                (Some(w), Some(h)) => Some(format!("{w} {h}")),
+                (w, h) => w.or(h),
+            },
+        })
     })
     .await
     .map_err(|e| format!("Einlesen abgebrochen: {e}"))?

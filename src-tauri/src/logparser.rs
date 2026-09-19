@@ -32,19 +32,54 @@ pub struct Bauplan {
 
 const MELDUNG: &str = "Added notification \"";
 
-/// Die belegten Hinweistexte je Sprache.
+/// Die belegten Hinweistexte je Sprache. Ohne das Leerzeichen dahinter: wie viel
+/// Platz nach dem Doppelpunkt steht, entscheidet das Spiel, nicht wir.
 const TEXTE: [(&str, Sprache); 2] = [
-    ("Bauplan erhalten: ", Sprache::De),
-    ("Received Blueprint: ", Sprache::En),
+    ("Bauplan erhalten:", Sprache::De),
+    ("Received Blueprint:", Sprache::En),
 ];
+
+/// Wird beim Aendern der Erkennung HOCHGEZAEHLT.
+///
+/// Die App merkt sich gefundene Bauplaene und Lesestellen in bauplaene.json. Ohne
+/// diese Zahl bliebe ein mit einer kaputten Fassung gelesener Name fuer immer so
+/// stehen: die Log gilt als gelesen, also wird sie nie wieder angefasst.
+///
+/// 1 -> 2 (19.09.2026): Namen mit Anfuehrungszeichen wurden abgeschnitten.
+pub const PARSER_VERSION: u32 = 2;
+
+/// Wo der Name endet: am ersten `"`, vor dem (nach Leerzeichen) ein `:` steht.
+///
+/// NICHT einfach am ersten `"`. Genau daran ist die erste Fassung gescheitert:
+/// aus `R97 "Kismet" Shotgun: ` wurde `R97`. Namen mit Anfuehrungszeichen sind im
+/// Spiel normal (Waffen, Ruestungen), und der Fehler faellt nicht auf — der Name
+/// sieht plausibel aus, nur eben falsch.
+///
+/// Das Spiel schliesst die Meldung mit `: "` ab. Dieses Paar ist das Ende, nicht
+/// jedes Anfuehrungszeichen. Gesucht wird das ERSTE passende, damit der Name so
+/// kurz wie moeglich bleibt (bei einer Zeile mit mehreren Meldungen).
+fn name_ende(inhalt: &str) -> Option<usize> {
+    let bytes = inhalt.as_bytes();
+    for (i, b) in bytes.iter().enumerate() {
+        if *b != b'"' {
+            continue;
+        }
+        let davor = inhalt[..i].trim_end();
+        if davor.ends_with(':') && davor.len() > 1 {
+            return Some(i);
+        }
+    }
+    // Kein `: "`: aeltere oder andere Meldungen enden direkt am `"`
+    // ("Bauplan erhalten: Arrow"). Dann gilt das erste Anfuehrungszeichen.
+    inhalt.find('"')
+}
 
 /// Eine einzelne Log-Zeile pruefen. `None`, wenn sie keinen Bauplan meldet.
 pub fn bauplan_aus_zeile(zeile: &str) -> Option<Bauplan> {
     let rest = &zeile[zeile.find(MELDUNG)? + MELDUNG.len()..];
     let (text, sprache) = TEXTE.iter().find(|(text, _)| rest.starts_with(text))?;
     let inhalt = &rest[text.len()..];
-    // Der Name reicht bis zum schliessenden Anfuehrungszeichen der Meldung.
-    let roh = &inhalt[..inhalt.find('"')?];
+    let roh = &inhalt[..name_ende(inhalt)?];
     // Das Spiel haengt ": " an ("Sedulity (Ind/2/B): "), nicht immer.
     let name = roh.trim().trim_end_matches(':').trim();
     if name.is_empty() {
@@ -118,6 +153,22 @@ mod tests {
         assert_eq!(bauplan_aus_zeile("irgendeine andere Zeile"), None);
         // Abgeschnittene Zeile ohne schliessendes Anfuehrungszeichen: kein Treffer, kein Absturz.
         assert_eq!(bauplan_aus_zeile("Added notification \"Bauplan erhalten: Sedul"), None);
+    }
+
+    #[test]
+    fn name_mit_anfuehrungszeichen_bleibt_ganz() {
+        // Der Fehler der ersten Fassung: hier kam nur "R97" heraus.
+        let z = "<2026-09-18T12:00:00.000Z> [Notice] <SHUDEvent_OnNotification> Added notification \"Bauplan erhalten: R97 \"Kismet\" Shotgun: \" [4] to queue.";
+        assert_eq!(bauplan_aus_zeile(z).map(|b| b.name), Some("R97 \"Kismet\" Shotgun".into()));
+    }
+
+    #[test]
+    fn klammern_und_zahlen_im_namen() {
+        let z = "Added notification \"Bauplan erhalten: R97 Shotgun Magazine (18 Schuss): \" [4]";
+        assert_eq!(
+            bauplan_aus_zeile(z).map(|b| b.name),
+            Some("R97 Shotgun Magazine (18 Schuss)".into())
+        );
     }
 
     #[test]
